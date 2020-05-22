@@ -176,18 +176,20 @@ impl From<std::io::ErrorKind> for Error {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 /// A network device name and (potentially) pcap's description of it.
 pub struct Device {
     pub name: String,
     pub desc: Option<String>,
+    pub addr: Option<Vec<Vec<u8>>>,
 }
 
 impl Device {
-    fn new(name: String, desc: Option<String>) -> Device {
+    fn new(name: String, desc: Option<String>, addresses: Option<Vec<Vec<u8>>>) -> Device {
         Device {
             name: name,
             desc: desc,
+            addr: addresses,
         }
     }
 
@@ -202,7 +204,7 @@ impl Device {
         with_errbuf(|err| unsafe {
             cstr_to_string(raw::pcap_lookupdev(err))
                 ?
-                .map(|name| Device::new(name, None))
+                .map(|name| Device::new(name, None, None))
                 .ok_or_else(|| Error::new(err))
         })
     }
@@ -219,8 +221,24 @@ impl Device {
                 let mut cur = dev_buf;
                 while !cur.is_null() {
                     let dev = &*cur;
+                    // grab the addresses associated with this interface.
+                    let mut addresses = vec![];
+                    let mut pcap_addr_list = dev.addresses;
+                    while !pcap_addr_list.is_null() {
+                    	// dereference a few times and convert sa_data to u8
+                    	let sa_data = (*(*pcap_addr_list).addr).sa_data;
+                    	let unsigned_addr = sa_data[2..6].iter().map(|x| *x as u8).collect();
+                    	// slice so that IP bytes only.
+                    	addresses.push(unsigned_addr);
+                    	pcap_addr_list = (*pcap_addr_list).next;
+                    }
+                    
+
+
                     devices.push(Device::new(cstr_to_string(dev.name)?.ok_or(InvalidString)?,
-                                             cstr_to_string(dev.description)?));
+                                             cstr_to_string(dev.description)?,
+                                             if addresses.len() > 0 { Some(addresses)} else {
+                    						None}));
                     cur = dev.next;
                 }
                 Ok(devices)
@@ -233,7 +251,7 @@ impl Device {
 
 impl<'a> Into<Device> for &'a str {
     fn into(self) -> Device {
-        Device::new(self.into(), None)
+        Device::new(self.into(), None, None)
     }
 }
 
